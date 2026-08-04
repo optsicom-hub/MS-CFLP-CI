@@ -10,7 +10,7 @@ Universitat de València.
 ## Publication Details
 
 - **Paper Link:** [Paste the final DOI link here] |
-- **Journal:**  European Journal of Operational Research
+- **Journal:**  Computers and Operations Research
 - **Impact Factor:**  to include 
 - **Quartile:**  Q1
 

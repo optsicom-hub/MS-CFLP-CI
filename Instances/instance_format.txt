@@ -1,0 +1,24 @@
+Instance format
+-------------------
+Every instance in this work has the same structure:
+
+Warehouses: number of facilities
+Stores: number of customers
+
+Capacity: storage capacity of each facility, separated by commas
+FixedCost: cost of opening each facility, separated by commas
+Goods: demand of each customer, separated by commas
+
+SupplyCost: cost of serving every customer from each facility. Customers are separated by commas for each facility, and facilities are separated by |
+
+Incompatibilities: total number of incompatible pairs among customers
+IncompatiblePairs: specific incompatible pairs separated by |, with customers within each pair separated by commas
+
+-------------------
+Three different sources of instances are available:
+
+wlp dataset: https://www.ants-lab.it/mess2020/#competition
+cflp-ci dataset: https://github.com/iolab-uniud/ms-cflp-ci
+wlp dataset with modified incompatibilities: current repository
+
+(August 2026)

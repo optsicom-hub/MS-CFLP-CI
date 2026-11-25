@@ -19,6 +19,8 @@ typedef struct {
     int **X;
     double gap;
     int solcount;
+    double lower_bound; // EXACT_FULL
+    double mip_gap;     // EXACT_FULL
 
     int *fopen;
 } solutionex_t;

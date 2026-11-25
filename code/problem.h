@@ -44,6 +44,7 @@ typedef struct {
 problem_t *create_problem(int, int);
 void free_problem(problem_t *);
 int CalcCmaxMin(const problem_t *);
+double CalcMeanCost(const problem_t *);
 void printProblem(const problem_t *problem);
 
 #endif /* !PROBLEM_H */

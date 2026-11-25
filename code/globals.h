@@ -18,4 +18,6 @@ extern double fo_literature;
 extern double t_ours_to_match;
 //extern string results_path;
 extern int divisor_time;
+extern bool search_profile; // SEARCH_PROFILE
+extern bool log_constructive; // LOG_CONSTRUCTIVE: append one line per run to resumen_constructivo.csv (off by default)
 #endif // GLOBALS_H

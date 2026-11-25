@@ -40,4 +40,5 @@ void DropCustomer(const problem_t *problem, solution_t *solution, int cliente, i
 void InsertCustomer_2q(const problem_t *problem, solution_t *sol, int cliente, int facility, int suma_valor ,int done);
 vector<int> ClosestFac_norm(const problem_t*problem, solution_t *solution, vector<int> v_cli);
 void GenerateSubproblem(const problem_t *problem, problem_t *subprob, solution_t *sol, int ncli, int nsupp, vector<int> v_cli, vector<int> v_supp);
+vector<pair<int,double>> ClosestFac_norm2(const problem_t* problem, solution_t* solution, vector<int> v_cli);
 #endif

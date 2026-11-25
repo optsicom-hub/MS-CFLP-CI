@@ -10,6 +10,7 @@
 #include <chrono>
 #include <fstream>
 #include <string>
+#include <iomanip> // SEARCH_PROFILE
 
 using namespace std;
 
@@ -61,6 +62,36 @@ protected:
     }
 };
 
+// SEARCH_PROFILE: logs every improving incumbent of the constructive phase
+// as "<time> CONST <obj>" (time in seconds since t0, 3 decimals).
+class SearchProfileCallback : public GRBCallback { // SEARCH_PROFILE
+public:
+    std::ofstream& file;
+    const std::chrono::steady_clock::time_point& t0;
+    double best_obj;
+
+    SearchProfileCallback(std::ofstream& f, const std::chrono::steady_clock::time_point& start)
+        : file(f), t0(start), best_obj(1e30) {}
+
+protected:
+    void callback() override {
+        if (where == GRB_CB_MIPSOL) {
+            double obj = getDoubleInfo(GRB_CB_MIPSOL_OBJ);
+            if (obj < best_obj) {
+                best_obj = obj;
+                double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                file << std::fixed << std::setprecision(3) << t << " CONST " << obj << "\n";
+                file.flush();
+            }
+        }
+    }
+};
+
+// LOG_CONSTRUCTIVE: one line per run in resumen_fo.csv (defined in exact.cpp)
+void WriteFoCsv(const std::string& name_inst, double z_const, double z_final,
+    double t_best_const, double t_best_fo, double total_time,
+    long long n_iter_fo, long long n_mejoras_fo);
+
 class Exact {
 public:
     Exact();
@@ -102,6 +133,11 @@ public:
         int DmaxIni, string name_inst, double upp_bound);
 
     void ConversionSolexToSol(const problem_t *problem, solution_t *sol, solutionex_t *sol_ex);
+
+    vector<int> KnapsackClosedFac(const problem_t* problem, solution_t* solution,
+                               const vector<int>& v_cust_subproblem,
+                               int n_supp_close,
+                               const vector<int>& v_supp_open);
 
 };
 #endif //EXACT_H

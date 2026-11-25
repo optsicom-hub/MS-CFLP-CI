@@ -581,3 +581,25 @@ void GenerateSubproblem(const problem_t *problem, problem_t *subprob, solution_t
     }
 
 }
+
+vector<pair<int,double>> ClosestFac_norm2(const problem_t* problem, solution_t* solution, vector<int> v_cli) {
+
+    int n = v_cli.size();
+
+    vector<pair<int,double>> ReturnFac;
+
+    for (int j = 0; j < problem->num_W; j++) {
+        if (solution->fopen[j] == 0) {
+            double suma = 0.0;
+            for (int i = 0; i < n; i++) {
+                int cliente = v_cli[i];
+                suma += problem->supplycost[cliente][j];
+            }
+
+            suma = suma/sc_norm + (1.0*problem->fixedcost[j]/fixed_norm)/(1.0*problem->capacity[j]/capacity_norm);
+            ReturnFac.push_back({j, suma});
+        }
+    }
+
+    return ReturnFac;
+}

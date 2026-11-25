@@ -4,6 +4,7 @@
 #include "globals.h"
 #include "exact.h"
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <algorithm>
 #include <vector>
@@ -25,6 +26,8 @@ int maximum(int a, int b);
 void saveToFileString(const std::string &filename, std::vector<string> data);
 
 int main(int argc, char **argv) {
+
+	//search_profile = false; // SEARCH_PROFILE: set to false to disable
 
 	auto *problem = new problem_t;
 	string name_inst = argv[1];
@@ -105,6 +108,30 @@ int main(int argc, char **argv) {
 				std::cerr << "ERROR: missing value for --divisor_time." << std::endl;
 				return 1;
 			}
+		}else if (arg_str == "--log_constructive") { // LOG_CONSTRUCTIVE
+			if (i + 1 < argc) {
+				try {
+					log_constructive = std::stoi(argv[++i]) != 0;
+				} catch (const std::exception& e) {
+					std::cerr << "ERROR: invalid value for --log_constructive: " << argv[i] << " (" << e.what() << ")" << std::endl;
+					return 1;
+				}
+			} else {
+				std::cerr << "ERROR: missing value for --log_constructive." << std::endl;
+				return 1;
+			}
+		}else if (arg_str == "--search_profile") { // SEARCH_PROFILE
+			if (i + 1 < argc) {
+				try {
+					search_profile = std::stoi(argv[++i]) != 0;
+				} catch (const std::exception& e) {
+					std::cerr << "ERROR: invalid value for --search_profile: " << argv[i] << " (" << e.what() << ")" << std::endl;
+					return 1;
+				}
+			} else {
+				std::cerr << "ERROR: missing value for --search_profile." << std::endl;
+				return 1;
+			}
 		}
 	}
 
@@ -117,9 +144,10 @@ int main(int argc, char **argv) {
 	// Select depending on the execution
 	//const double tmax = double(problem->num_W)*ratio_PASS;
 	//const double tmax = 10.0 * sqrt(double(problem->num_W)) * ratio_PASS;
-	const double tmax = 10*sqrt(problem->num_W);
-	//const double tmax = 7200.0;
-	//const double tmax = problem->num_W;
+	//const double tmax = 10*sqrt(problem->num_W);
+	// double tmax = 7200.0;
+	const double tmax = problem->num_W;
+	//const double tmax = 10*sqrt(problem->num_W);
 
 	const long long time_limit1 = tmax/divisor_time;
 	Exact ex;
@@ -144,6 +172,10 @@ int main(int argc, char **argv) {
 		long long elapsed_time = 0;
 		auto current_time = std::chrono::steady_clock::now();
 
+		// Instant (in seconds since start_time) at which the best objective value found so far was obtained
+		double best_found_time = 0.0;
+		double t_best_const = 0.0; // LOG_CONSTRUCTIVE: best_found_time right after the constructive phase
+
 			int Dmaxheur = 0;
 
 			int Dmaxmin;
@@ -152,20 +184,36 @@ int main(int argc, char **argv) {
 
 				Dmaxmin = CalcCmaxMin(problem);
 
+				/*{
+					double meanCost = CalcMeanCost(problem);
+					std::ios_base::fmtflags oldFlags = cout.flags();
+					std::streamsize oldPrecision = cout.precision();
+					cout << "Mean supply cost: " << std::fixed << std::setprecision(4) << meanCost << endl;
+					cout << "Dmaxmin: " << Dmaxmin << endl;
+					cout.flags(oldFlags);
+					cout.precision(oldPrecision);
+
+				}*/
+
 				current_time = std::chrono::steady_clock::now();
 				elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count();
 
 				best_exact->cost = -1;
 				best_exact->run_time = 0;
 
-				best_exact->target_time = elapsed_time;
+				// target_time is expressed in seconds elsewhere (see RunGurobiEx_Interval), keep this placeholder consistent
+				best_exact->target_time = elapsed_time / 1000.0;
 				best_exact->Dmax_sol = Dmaxheur;
 
 				//comment to execute MILP in 7200 seconds
 				ex.RunGurobiEx_Interval(problem, solution, solution_exact, best_exact, time_limit1-elapsed_time/1000.0, start_time, Dmaxmin, name_inst, -1.0);
 
-				// Uncomment to save the solution of the construction phase
-				//saveSolution(solution, "inisol_" + name_inst , problem->num_S, problem->num_W);
+				// RunGurobiEx_Interval sets best_exact->target_time to the instant (in seconds since
+				// start_time) at which the MILP solution that becomes the initial best_solution was found.
+				if (best_exact->cost != -1) {
+					best_found_time = static_cast<double>(best_exact->target_time);
+				}
+				t_best_const = best_found_time; // LOG_CONSTRUCTIVE
 
 				current_time = std::chrono::steady_clock::now();
 				double elapsed_interval = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count() / 1000.0;
@@ -174,10 +222,12 @@ int main(int argc, char **argv) {
 				/*ex.runGurobi_ex(problem, solution_exact, name_inst,1," ", -1.0, 0.0, 7200, -1.0, 0, start_time);
 				{
 					double elapsed_milp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() / 1000.0;
-					std::ofstream f_milp("results_milp_7200.txt", std::ios::app);
-					f_milp << name_inst << " " << solution_exact->cost << " " << elapsed_milp << "\n";
+					std::ofstream f_milp("results_milp_W.txt", std::ios::app);
+					f_milp << std::fixed << std::setprecision(4); // EXACT_FULL
+					f_milp << name_inst << " " << solution_exact->cost << " " << elapsed_milp
+					       << " " << solution_exact->lower_bound << " " << solution_exact->mip_gap << "\n"; // EXACT_FULL
 				}
-				 exit(1);*/
+				 exit(0);*/
 			}
 
 		if (execution == 0) {
@@ -240,7 +290,15 @@ int main(int argc, char **argv) {
 
 			long long elapsed_ls = 0;
 
+			std::ofstream sp_file; // SEARCH_PROFILE
+			if (search_profile) { // SEARCH_PROFILE
+				sp_file.open("convergence_" + fs::path(name_inst).stem().string() + ".txt", std::ios::app);
+			}
+
+			long long n_iter_fo = 0, n_mejoras_fo = 0; // LOG_CONSTRUCTIVE: F&O iterations / accepted improvements
+
 			while(elapsed_ls/1000.0 < time_limit_ls) {
+				n_iter_fo++; // LOG_CONSTRUCTIVE
 
 				n_supp_open = minimum(ceil(pct_open*subproblem_size),best_solution->n_open);
 				n_supp_close = minimum(ceil(pct_close*subproblem_size),problem->num_W-best_solution->n_open);
@@ -295,34 +353,49 @@ int main(int argc, char **argv) {
 					closest_suppliers = ClosestFac_norm(problem, best_solution, v_cust_subproblem);
 				}
 
-				int iter = 0;
+				if (strategy < 3) {
+					int iter = 0;
 
-				while(v_supp.size()<n_supp_close+n_supp_open) {
-					int f;
+					while(v_supp.size()<n_supp_close+n_supp_open) {
+						int f;
 
-					if (strategy == 1) {
-						f = closest_suppliers[iter];
-					}else if(strategy == 2) {
-						 f = dist_best_option(rng);
-					}
+						if (strategy == 1) {
+							f = closest_suppliers[iter];
+						}else if(strategy == 2) {
+							f = dist_best_option(rng);
+						}
 
-					if (best_solution->fopen[f] == 0) {
-						auto it_found = std::find(v_supp.begin(), v_supp.end(), f);
+						if (best_solution->fopen[f] == 0) {
+							auto it_found = std::find(v_supp.begin(), v_supp.end(), f);
 
-						if (it_found == v_supp.end()) {
-							v_supp.push_back(f);
+							if (it_found == v_supp.end()) {
+								v_supp.push_back(f);
+							}
+
+						}
+						if (strategy == 1) {
+							iter++;
 						}
 
 					}
-					if (strategy == 1) {
-						iter++;
-					}
+				}else {
+					vector<int> knap_selected = ex.KnapsackClosedFac(
+					problem, best_solution,
+					v_cust_subproblem,
+					n_supp_close,
+					v_supp
+					);
 
+					for (int f : knap_selected) {
+						v_supp.push_back(f);
+					}
 				}
+
 
 				sort(v_supp.begin(), v_supp.end());
 
-				int nsupp = n_supp_open + n_supp_close;
+				//int nsupp = n_supp_open + n_supp_close;
+				int nsupp = (strategy == 3) ? static_cast<int>(v_supp.size()) : n_supp_open + n_supp_close;
 
 				auto *subproblem = new problem_t;
 				subproblem = create_problem(ncli, nsupp);
@@ -345,6 +418,7 @@ int main(int argc, char **argv) {
 				elapsed_gurobi = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_gurobi).count();
 
 				if (solution_exact->cost < coste_pre && solution_exact->solcount > 0) {
+					n_mejoras_fo++; // LOG_CONSTRUCTIVE
 					for (int c : v_cust_subproblem) {
 
 						for (int k = best_solution->assignment_f[c][0]; k > 0; k--) {
@@ -367,6 +441,19 @@ int main(int argc, char **argv) {
 						}
 					}
 
+					if (search_profile) { // SEARCH_PROFILE
+						std::cout << "[SP] FO coste=" << best_solution->cost << std::endl;
+					}
+
+					// Record the instant (seconds since start_time) at which the solution improved
+					current_time = std::chrono::steady_clock::now();
+					best_found_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count() / 1000.0;
+
+					if (search_profile) { // SEARCH_PROFILE
+						double sp_t = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+						sp_file << std::fixed << std::setprecision(3) << sp_t << " FO " << best_solution->cost << "\n";
+						sp_file.flush();
+					}
 
 				}
 
@@ -384,14 +471,26 @@ int main(int argc, char **argv) {
 		int fo_final = best_solution->cost;
 		total_time_secs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() / 1000.0;
 
+		// LOG_CONSTRUCTIVE: z_const = fo_inicial of the constructive (-1 if none), t_best_fo = best_found_time
+		// (same value written to summary.txt), independent of search_profile
+		if (log_constructive) {
+			WriteFoCsv(name_inst, best_exact->cost, fo_final, t_best_const, best_found_time, total_time_secs,
+				n_iter_fo, n_mejoras_fo);
+		}
+
 		delete_solution(solution);
 		delete_solution(best_solution);
 		delete_solutionex(best_exact, problem->num_S);
 
-		// Add execution to summary file
-		vector<string> data = {name_inst, to_string(total_time_secs), to_string(fo_final)};//,
+		// Add execution to summary file: instance, total runtime, final objective value and the
+		// instant (seconds since start_time) at which that final objective value was obtained
+		vector<string> data = {name_inst, to_string(total_time_secs), to_string(fo_final), to_string(best_found_time)};//,
 		saveToFileString("summary.txt", data);
+
+		cout << fo_final <<endl;
 	}
+
+
 
 	return 0;
 

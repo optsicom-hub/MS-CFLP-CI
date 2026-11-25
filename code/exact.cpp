@@ -10,6 +10,10 @@
 #include <regex>
 #include <chrono>
 #include <numeric>
+#include <filesystem>
+#include <iomanip>
+#include <sstream> // SEARCH_PROFILE
+#include <functional> // LOG_CONSTRUCTIVE
 #include "exact.h"
 #include "solution_exact.h"
 #include "problem.h"
@@ -142,6 +146,7 @@ void Exact::runGurobi_ex(const problem_t*problem, solutionex_t *sol, string name
     		} else {
     			local_env.set(GRB_IntParam_OutputFlag, 0);
     		}
+    		//local_env.set(GRB_IntParam_OutputFlag, 1);
     		local_env.set(GRB_IntParam_Threads, 1);
     		local_env.set(GRB_IntParam_Seed, 12345);
     		local_env.start();
@@ -150,6 +155,8 @@ void Exact::runGurobi_ex(const problem_t*problem, solutionex_t *sol, string name
 
         GRBModel model = GRBModel(*env_ptr);
         model.set(GRB_StringAttr_ModelName, "MyModel");
+
+
 
     	GRBVar** X1;
     	GRBVar** Z1;
@@ -271,6 +278,7 @@ void Exact::runGurobi_ex(const problem_t*problem, solutionex_t *sol, string name
     	model.update();
 
     	model.set(GRB_DoubleParam_MIPGap, gap);
+
     	if (maxnode != -1.0) {
     		model.set(GRB_DoubleParam_NodeLimit, maxnode); // we don't use it right now
     	}
@@ -287,6 +295,7 @@ void Exact::runGurobi_ex(const problem_t*problem, solutionex_t *sol, string name
     		baseFileName = name_inst;
     	}
 
+    	model.set(GRB_StringParam_LogFile, "gurobi_output_" + baseFileName + ".log");
     	if (exact_mode == 2) {
     		model.set(GRB_StringParam_LogFile, "gurobi_output_" + baseFileName + ".log"); // Name of the log file
     	}
@@ -295,6 +304,9 @@ void Exact::runGurobi_ex(const problem_t*problem, solutionex_t *sol, string name
     	model.set(GRB_IntParam_LogToConsole, 1);
     	current_time = std::chrono::steady_clock::now();
     	elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count();
+
+    	sol->lower_bound = -1.0; // EXACT_FULL
+    	sol->mip_gap = -1.0;     // EXACT_FULL
 
     	if (tlimit != -1 && tlimit-elapsed_time/1000.0 > 0) {
     		model.set(GRB_DoubleParam_TimeLimit, tlimit-elapsed_time/1000.0);
@@ -307,6 +319,16 @@ void Exact::runGurobi_ex(const problem_t*problem, solutionex_t *sol, string name
     		current_time = std::chrono::steady_clock::now();
     		elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count();
     		model.optimize();
+
+    		// EXACT_FULL: lower bound always read; MIP gap only if there is a solution (-1 otherwise)
+    		{
+    			try { sol->lower_bound = model.get(GRB_DoubleAttr_ObjBound); } catch (...) { sol->lower_bound = -1.0; } // EXACT_FULL
+    			int solcount_ef = 0;
+    			try { solcount_ef = model.get(GRB_IntAttr_SolCount); } catch (...) { solcount_ef = 0; } // EXACT_FULL
+    			if (solcount_ef > 0) {
+    				try { sol->mip_gap = model.get(GRB_DoubleAttr_MIPGap); } catch (...) { sol->mip_gap = -1.0; }         // EXACT_FULL
+    			}
+    		}
 
     		vector<double> ret_vec;
     	}
@@ -683,8 +705,145 @@ void Exact::extendGurobiModel_ex(GRBModel& model,
 	}
 }
 
+// Instance name: file name only, without path and without ".txt"
+static std::string InstShortName(const std::string& name_inst) {
+	std::string inst_short = std::filesystem::path(name_inst).filename().string();
+	const std::string ext = ".txt";
+	if (inst_short.size() >= ext.size() &&
+		inst_short.compare(inst_short.size() - ext.size(), ext.size(), ext) == 0) {
+		inst_short.erase(inst_short.size() - ext.size());
+	}
+	return inst_short;
+}
+
+// LOG_CONSTRUCTIVE: Gurobi results of the last optimize() of the constructive phase
+// (the model actually solved, with d_final). Unknown values stay "NA".
+struct ConstructiveLog {
+	std::string status = "NA", solcount = "NA", objval = "NA", objbound = "NA",
+				mipgap = "NA", runtime = "NA", grb_timelimit = "NA";
+	bool has_obj = false, has_bound = false;
+	double z = 0.0, lb = 0.0;
+	void reset() { *this = ConstructiveLog(); }
+};
+
+static std::string FmtNum(double v) {
+	std::ostringstream o;
+	o.imbue(std::locale::classic());
+	o << std::setprecision(10) << v;
+	return o.str();
+}
+
+// LOG_CONSTRUCTIVE: append one line to resumen_constructivo.csv (header if the file does not exist)
+static void WriteConstructiveCsv(const problem_t* problem, const std::string& name_inst, int dmaxmin,
+	int d_final, size_t num_arcs, int num_vars, int num_binvars, int num_constrs,
+	const ConstructiveLog& cl, long long time_limit_const, double construction_secs) {
+
+	const std::string csv_file = "resumen_constructivo.csv";
+	const long long total_arcs = static_cast<long long>(problem->num_S) * problem->num_W;
+	auto ival = [](long long v) { return v < 0 ? std::string("NA") : std::to_string(v); };
+
+	// lb_valid = false when ObjBound is unknown, 0 or a huge negative number (no useful bound)
+	const bool lb_valid = cl.has_bound && cl.lb != 0.0 && cl.lb > -1e20;
+	std::string gap_pct = "NA";
+	if (cl.has_obj && cl.has_bound && cl.z != 0.0) {
+		gap_pct = FmtNum(100.0 * (cl.z - cl.lb) / cl.z); // same definition as Gurobi's MIPGap
+	}
+
+	std::error_code ec;
+	bool write_header = !std::filesystem::exists(csv_file, ec) ||
+						std::filesystem::file_size(csv_file, ec) == 0;
+	if (ec) write_header = true;
+
+	std::ofstream f(csv_file, std::ios::app);
+	f.imbue(std::locale::classic());
+	if (write_header) {
+		f << "instancia,W,S,media_supplycost,dmaxmin,d_final,total_arcos,num_arcos,pct_arcos,"
+			 "num_vars,num_bin_vars,num_constrs,status,solcount,z,lb,lb_valid,grb_mipgap,gap_pct,"
+			 "runtime_s,tiempo_construccion_s,time_limit_const,grb_timelimit\n";
+	}
+	f << InstShortName(name_inst) << ","
+	  << problem->num_W << ","
+	  << problem->num_S << ","
+	  << FmtNum(CalcMeanCost(problem)) << ","
+	  << dmaxmin << ","
+	  << ival(d_final) << ","
+	  << total_arcs << ","
+	  << (d_final < 0 ? std::string("NA") : std::to_string(num_arcs)) << ","
+	  << (d_final < 0 || total_arcs == 0 ? std::string("NA") : FmtNum(100.0 * num_arcs / total_arcs)) << ","
+	  << ival(num_vars) << ","
+	  << ival(num_binvars) << ","
+	  << ival(num_constrs) << ","
+	  << cl.status << ","
+	  << cl.solcount << ","
+	  << cl.objval << ","
+	  << cl.objbound << ","
+	  << (lb_valid ? "true" : "false") << ","
+	  << cl.mipgap << ","
+	  << gap_pct << ","
+	  << cl.runtime << ","
+	  << FmtNum(construction_secs) << ","
+	  << time_limit_const << ","
+	  << cl.grb_timelimit << "\n";
+}
+
+// LOG_CONSTRUCTIVE: append one line to resumen_fo.csv (header if the file does not exist).
+// z_const < 0 means the constructive found no solution -> z/improvement/t_best_const are NA.
+void WriteFoCsv(const std::string& name_inst, double z_const, double z_final,
+	double t_best_const, double t_best_fo, double total_time,
+	long long n_iter_fo, long long n_mejoras_fo) {
+
+	const std::string csv_file = "resumen_fo.csv";
+	const bool has_const = z_const >= 0.0;
+	auto na_or = [&](double v) { return has_const ? FmtNum(v) : std::string("NA"); };
+
+	std::error_code ec;
+	bool write_header = !std::filesystem::exists(csv_file, ec) ||
+						std::filesystem::file_size(csv_file, ec) == 0;
+	if (ec) write_header = true;
+
+	std::ofstream f(csv_file, std::ios::app);
+	f.imbue(std::locale::classic());
+	if (write_header) {
+		f << "instancia,z_const,z_final,mejora_pct,t_best_const,t_best_fo,tiempo_total_s,n_iter_fo,n_mejoras_fo\n";
+	}
+	f << InstShortName(name_inst) << ","
+	  << na_or(z_const) << ","
+	  << na_or(z_final) << ","
+	  << (has_const && z_const != 0.0 ? FmtNum(100.0 * (z_const - z_final) / z_const) : std::string("NA")) << ","
+	  << na_or(t_best_const) << ","
+	  << na_or(t_best_fo) << ","
+	  << FmtNum(total_time) << ","
+	  << n_iter_fo << ","
+	  << n_mejoras_fo << "\n";
+}
+
 void Exact::RunGurobiEx_Interval(const problem_t *problem, solution_t *sol, solutionex_t *sol_ex, solutionex_t *best_ex, long long time_limit, const std::chrono::steady_clock::time_point& start_time,
 	int DmaxIni, string name_inst, double upp_bound) {
+
+	// Reduced-model size log (resumen_modelo.txt): values of the final (feasible) iteration.
+	// They are (re)set at each d right after model.update(), so on exit they describe the
+	// last model built/optimized; resumen_modelo.txt is still only written when resumen_found.
+	auto construction_start = std::chrono::steady_clock::now();
+	bool resumen_found = false;
+	int resumen_d = -1;
+	size_t resumen_arcs = 0;
+	int resumen_numvars = -1;
+	int resumen_numbinvars = -1; // LOG_CONSTRUCTIVE
+	int resumen_numconstrs = -1;
+
+	// LOG_CONSTRUCTIVE: the CSV line is written when this guard is destroyed, i.e. on every exit
+	// path of this function (normal end, early return on time limit, caught GRBException/bad_alloc).
+	ConstructiveLog clog;
+	struct OnExit {
+		std::function<void()> f;
+		~OnExit() { try { f(); } catch (...) {} }
+	} clog_guard{[&]() {
+		if (!log_constructive) return;
+		double construction_secs = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - construction_start).count() / 1000.0;
+		WriteConstructiveCsv(problem, name_inst, DmaxIni, resumen_d, resumen_arcs, resumen_numvars,
+			resumen_numbinvars, resumen_numconstrs, clog, time_limit, construction_secs);
+	}};
 
 	try {
 
@@ -710,7 +869,15 @@ void Exact::RunGurobiEx_Interval(const problem_t *problem, solution_t *sol, solu
 		env.set(GRB_IntParam_Seed, 12345);
 		env.start();
 
+		// SEARCH_PROFILE: open (truncate) once at the start of the constructive phase
+		std::ofstream sp_file; // SEARCH_PROFILE
+		if (search_profile) { // SEARCH_PROFILE
+			sp_file.open("convergence_" + std::filesystem::path(name_inst).stem().string() + ".txt", std::ios::trunc);
+		}
+		SearchProfileCallback sp_cb(sp_file, start_time); // SEARCH_PROFILE: same start_time as the algorithm
+
 		GRBModel model(env);
+		if (search_profile) model.setCallback(&sp_cb); // SEARCH_PROFILE
 
 		int num_Y = problem->num_W;
 		double* lb_Y = new double[num_Y];
@@ -739,7 +906,7 @@ void Exact::RunGurobiEx_Interval(const problem_t *problem, solution_t *sol, solu
 		std::map<int, GRBConstr> goods_constrs;
 		buildGurobiModel_ex(model, X2, Z2, Y, problem, DmaxIni, cap_constrs, goods_constrs);
 
-		for (int d = DmaxIni; d <= 60; d++) { // 60 is large enough to ensure that a feasible problem will be found
+		for (int d = DmaxIni; d <= 200; d++) { // 200 is large enough to ensure that a feasible problem will be found in our instances
 			auto start_gurobi = std::chrono::steady_clock::now();
 
 			current_time = std::chrono::steady_clock::now();
@@ -750,6 +917,16 @@ void Exact::RunGurobiEx_Interval(const problem_t *problem, solution_t *sol, solu
 			}
 
 			model.update();
+
+			// Size of the model about to be optimized (only the last d survives on exit)
+			resumen_d = d;
+			resumen_arcs = X2.size();
+			clog.reset(); // LOG_CONSTRUCTIVE: discard results of previous (infeasible) d
+			resumen_numvars = model.get(GRB_IntAttr_NumVars);
+			resumen_numbinvars = model.get(GRB_IntAttr_NumBinVars); // LOG_CONSTRUCTIVE
+			resumen_numconstrs = model.get(GRB_IntAttr_NumConstrs);
+
+			clog.grb_timelimit = FmtNum(time_limit - elapsed_time / 1000.0); // LOG_CONSTRUCTIVE
 			model.set(GRB_DoubleParam_TimeLimit, time_limit - elapsed_time / 1000.0);
 			//cout << "T restant " << time_limit - elapsed_time / 1000.0<<endl;
 			model.set(GRB_IntParam_MIPFocus, 1);
@@ -759,7 +936,43 @@ void Exact::RunGurobiEx_Interval(const problem_t *problem, solution_t *sol, solu
 				model.set(GRB_DoubleParam_Cutoff, upp_bound);
 			}
 
+			if (search_profile) sp_cb.best_obj = 1e30; // SEARCH_PROFILE: reset best value for each resolve (each d)
+
 			model.optimize();
+
+			// LOG_CONSTRUCTIVE: each attribute in its own try/catch, a missing value stays "NA"
+			if (log_constructive) {
+				try { clog.status = std::to_string(model.get(GRB_IntAttr_Status)); } catch (GRBException&) {}
+				int cl_solcount = -1;
+				try { cl_solcount = model.get(GRB_IntAttr_SolCount); clog.solcount = std::to_string(cl_solcount); } catch (GRBException&) {}
+				try { clog.lb = model.get(GRB_DoubleAttr_ObjBound); clog.objbound = FmtNum(clog.lb); clog.has_bound = true; } catch (GRBException&) {}
+				try { clog.runtime = FmtNum(model.get(GRB_DoubleAttr_Runtime)); } catch (GRBException&) {}
+				if (cl_solcount > 0) {
+					try { clog.z = model.get(GRB_DoubleAttr_ObjVal); clog.objval = FmtNum(clog.z); clog.has_obj = true; } catch (GRBException&) {}
+					try { clog.mipgap = FmtNum(model.get(GRB_DoubleAttr_MIPGap)); } catch (GRBException&) {}
+				}
+			}
+
+			// SEARCH_PROFILE: bound/gap/status per d -> convergence_bound_<inst>.txt and console.
+			// Each attribute is read in its own try/catch so a missing value never reaches the outer catch.
+			if (search_profile) { // SEARCH_PROFILE
+				try {
+					int sp_status = model.get(GRB_IntAttr_Status);
+					int sp_solcount = model.get(GRB_IntAttr_SolCount);
+					auto sp_fmt = [](double v) { std::ostringstream o; o << std::setprecision(10) << v; return o.str(); };
+					std::string sp_obj = "NA", sp_bound = "NA", sp_gap = "NA";
+					try { sp_bound = sp_fmt(model.get(GRB_DoubleAttr_ObjBound)); } catch (GRBException&) {}
+					if (sp_solcount > 0) {
+						try { sp_obj = sp_fmt(model.get(GRB_DoubleAttr_ObjVal)); } catch (GRBException&) {}
+						try { sp_gap = sp_fmt(model.get(GRB_DoubleAttr_MIPGap)); } catch (GRBException&) {}
+					}
+					std::string sp_line = std::to_string(d) + " " + std::to_string(sp_status) + " " + sp_obj + " " + sp_bound + " " + sp_gap;
+					std::ofstream sp_bfile("convergence_bound_" + std::filesystem::path(name_inst).stem().string() + ".txt", std::ios::app);
+					sp_bfile << sp_line << "\n";
+					sp_bfile.flush();
+					std::cout << "[SP-BOUND] " << sp_line << std::endl;
+				} catch (GRBException&) {}
+			}
 
 			current_time = std::chrono::steady_clock::now();
 			elapsed_gurobi = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_gurobi).count();
@@ -796,7 +1009,12 @@ void Exact::RunGurobiEx_Interval(const problem_t *problem, solution_t *sol, solu
 				}
 				sol_ex->run_time = elapsed_gurobi / 1000.0;
 				copysolution_ex(problem, best_ex, sol_ex);
+				if (search_profile) { // SEARCH_PROFILE
+					std::cout << "[SP] CONST obj=" << best_ex->cost << std::endl;
+				}
 				best_ex->target_time = elapsed_time / 1000.0;
+
+				resumen_found = true; // resumen_d/arcs/numvars/numconstrs already set after model.update()
 				break;
 			}
 
@@ -816,10 +1034,117 @@ void Exact::RunGurobiEx_Interval(const problem_t *problem, solution_t *sol, solu
 		}
 
 		ConversionSolexToSol(problem, sol, best_ex);
+
+		if (resumen_found) {
+			double construction_secs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - construction_start).count() / 1000.0;
+
+			const std::string resumen_file = "resumen_modelo.txt";
+
+			const std::string inst_short = InstShortName(name_inst);
+
+			double total_arcs = static_cast<double>(problem->num_S) * problem->num_W;
+			double arcs_frac = total_arcs > 0 ? resumen_arcs / total_arcs : 0.0;
+
+			std::error_code ec;
+			bool write_header = !std::filesystem::exists(resumen_file, ec) ||
+								std::filesystem::file_size(resumen_file, ec) == 0;
+			if (ec) write_header = true;
+
+			std::ofstream resumen(resumen_file, std::ios::app);
+			resumen.imbue(std::locale::classic());
+			if (write_header) {
+				resumen << "instancia,d_final,num_arcos,frac_arcos,num_vars,num_constrs,tiempo_construccion_s,fo_inicial\n";
+			}
+			resumen << inst_short << ","
+					<< resumen_d << ","
+					<< resumen_arcs << ","
+					<< std::fixed << std::setprecision(4) << arcs_frac << ","
+					<< resumen_numvars << ","
+					<< resumen_numconstrs << ","
+					<< std::setprecision(3) << construction_secs << ","
+					<< std::defaultfloat << std::setprecision(10) << best_ex->cost << "\n";
+		} // ofstream closes here
+
 		} catch (GRBException e) {
 			std::cerr << "Error Gurobi: " << e.getMessage() << std::endl;
 			std::cerr << "Error Code: " << e.getErrorCode() << std::endl;
 		} catch (const std::exception& e) {
 			std::cerr << "Error: " << e.what() << std::endl;
 		}
+}
+
+vector<int> Exact::KnapsackClosedFac(const problem_t* problem, solution_t* solution,
+                               const vector<int>& v_cust_subproblem,
+                               int n_supp_close,
+                               const vector<int>& v_supp_open) {
+    try {
+        vector<pair<int,double>> closest = ClosestFac_norm2(problem, solution, v_cust_subproblem);
+
+        int total_demand = 0;
+        for (int c : v_cust_subproblem) {
+            for (int j = 1; j < solution->assignment_f[c][0] + 1; j++) {
+                int f = solution->assignment_f[c][j];
+                auto it = find(v_supp_open.begin(), v_supp_open.end(), f);
+                if (it != v_supp_open.end()) {
+                    total_demand += solution->assignment_c[c][j];
+                }
+            }
+        }
+
+        int n_closed = closest.size();
+
+        GRBEnv env_knap = GRBEnv(true);
+        env_knap.set(GRB_IntParam_OutputFlag, 0);
+        env_knap.start();
+        GRBModel model = GRBModel(env_knap);
+
+        vector<double> lb_y(n_closed, 0.0);
+        vector<double> ub_y(n_closed, 1.0);
+        vector<double> obj_y(n_closed);
+        vector<char> vtype_y(n_closed, GRB_BINARY);
+
+        for (int idx = 0; idx < n_closed; idx++) {
+            obj_y[idx] = closest[idx].second;
+        }
+
+        GRBVar* y = model.addVars(lb_y.data(), ub_y.data(), obj_y.data(),
+                                   vtype_y.data(), nullptr, n_closed);
+
+        model.update();
+
+        GRBLinExpr cap_expr = 0;
+        for (int idx = 0; idx < n_closed; idx++) {
+            cap_expr += problem->capacity[closest[idx].first] * y[idx];
+        }
+        model.addConstr(cap_expr >= total_demand, "capacity");
+
+        model.set(GRB_DoubleParam_TimeLimit, 5.0);
+        model.optimize();
+
+        vector<int> selected;
+        if (model.get(GRB_IntAttr_SolCount) > 0) {
+            for (int idx = 0; idx < n_closed; idx++) {
+                if (y[idx].get(GRB_DoubleAttr_X) > 0.5) {
+                    selected.push_back(closest[idx].first);
+                }
+            }
+        } else {
+            vector<int> fallback = ClosestFac_norm(problem, solution, v_cust_subproblem);
+            for (int i = 0; i < min(n_supp_close, (int)fallback.size()); i++) {
+                selected.push_back(fallback[i]);
+            }
+        }
+
+        delete[] y;
+        return selected;
+
+    } catch (GRBException& e) {
+        vector<int> fallback = ClosestFac_norm(problem, solution, v_cust_subproblem);
+        vector<int> selected;
+        for (int i = 0; i < min(n_supp_close, (int)fallback.size()); i++) {
+            selected.push_back(fallback[i]);
+        }
+        return selected;
+    }
 }

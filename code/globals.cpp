@@ -15,4 +15,6 @@ int capacity_norm = 0;
 int strategy = 2;
 double t_ours_to_match = -1.0;
 //string results_path = "convergence_results.txt";
-int divisor_time = 1;
+int divisor_time = 2;
+bool search_profile = false; // SEARCH_PROFILE (enable with --search_profile 1)
+bool log_constructive = false; // LOG_CONSTRUCTIVE (enable with --log_constructive 1)

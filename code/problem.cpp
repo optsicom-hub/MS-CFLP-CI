@@ -73,6 +73,23 @@ int CalcCmaxMin(const problem_t *problem) {
         return max_of_mins;
 }
 
+double CalcMeanCost(const problem_t *problem) {
+
+        if (problem->num_S == 0 || problem->num_W == 0) {
+            return 0.0;
+        }
+
+        double sum = 0.0;
+
+        for (int i = 0; i < problem->num_S; i++) {
+            for (int j = 0; j < problem->num_W; j++) {
+                sum += problem->supplycost[i][j];
+            }
+        }
+
+        return sum / (static_cast<double>(problem->num_S) * problem->num_W);
+}
+
 
 void printProblem(const problem_t *problem) {
     cout << "Instance" <<endl;

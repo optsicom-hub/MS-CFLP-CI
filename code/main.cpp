@@ -31,7 +31,6 @@ int main(int argc, char **argv) {
 
 	auto *problem = new problem_t;
 	string name_inst = argv[1];
-	const string num_exec = argv[2];
 
 	for (int i = 1; i < argc; ++i) {
 		std::string arg_str = argv[i];
